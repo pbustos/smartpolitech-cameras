@@ -1,14 +1,13 @@
 import cv2, sys, requests, json, math
 import numpy as np
 from collections import deque
-from PyQt4.QtGui import *
-from PyQt4.QtCore import *
-from PyQt4 import uic
+from PySide.QtCore import *
+from PySide.QtGui import *
 import pyqtgraph as pg
 from subprocess import call
 
 # Generate GUI form .ui file
-call("pyuic4 vcapturegui.ui > ui_vcapturegui.py", shell=True)
+call("pyside-uic vcapturegui.ui > ui_vcapturegui.py", shell=True)
 
 from ui_vcapturegui import Ui_MainWindow
 
@@ -23,43 +22,47 @@ class MainWindow(QMainWindow, Ui_MainWindow):
    
 		cameras = self.readJSONFile('cameras.json')["cameras"]
 		
-		for c,d in cameras.iteritems():
-			d["grabber"] = cv2.VideoCapture(d["url"])
-			d["bg"] = cv2.BackgroundSubtractorMOG()
-			d["order"] = c
-			print "Camera: ",c, " status = ",d["grabber"].isOpened()
+		#for c,d in cameras.iteritems():
+			#d["grabber"] = cv2.VideoCapture(d["url"])
+			#d["bg"] = cv2.BackgroundSubtractorMOG()
+			
+			#print "Camera: ",c, " status = ",d["grabber"].isOpened()
 		
-		sumOK = sum( 1 for d in cameras.values() if d["grabber"].isOpened() )
+		#sumOK = sum( 1 for d in cameras.values() if d["grabber"].isOpened() )
+		sumOK = len(cameras)
 		
-		for d, cont  in zip( cameras.values(), range(sumOK)):
+		for cam,data in cameras.iteritems():
+			data["grabber"] = None
+			data["thread"] = CameraReader(cam)
+			data["thread"].signalVal.connect(self.slotDrawImage)
+		
+		for cam, cont  in zip( cameras.values(), range(sumOK)):
 			row,col  = self.buildGrid(sumOK, cont)
 			label = QLabel("caca")
 			self.gridLayout.addWidget(label, row, col)
-			d["label"] = label
-			print sumOK, cont, row, col,d["label"]
+			cam["label"] = label
+			print sumOK, cont, row, col,cam["label"]
 	
-	
+		#Tree widget
 		items = []
 		self.treeWidget.setColumnCount(2)
 		self.treeWidget.setHeaderLabels(["Live", "Camera"])
 		for name, data in cameras.iteritems():
-			cam = QTreeWidgetItem(self.treeWidget)
-			cam.setText(1,name)
-			if data["grabber"].isOpened():
-				cam.setIcon(0,QIcon("greenBall.png"))
-			else:
-				cam.setIcon(0,QIcon("redBall.png"))
-			data["widget"] = cam
-			items.append(cam)
+			widget = QTreeWidgetItem(self.treeWidget)
+			widget.setText(1,name)
+			widget.setIcon(0,QIcon("redBall.png"))
+			data["widget"] = widget
+			items.append(widget)
 			data["live"] = False
 		self.treeWidget.insertTopLevelItems(1,items)
         
 		for i in range(self.treeWidget.columnCount()):
 			self.treeWidget.resizeColumnToContents(i); 
 		
-		timer.timeout.connect( self.readCameras ) 
-		timer.start(100)
-		
+		#timer.timeout.connect( self.readCameras ) 
+		[c["thread"].start() for c in cameras.values() ]
+		#timer.start(100)
+		self.show()
 		
 	def buildGrid(self, numCams, index):		
 		totalCols = int( math.ceil(math.sqrt(numCams)) )
@@ -74,6 +77,46 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 				pprint(data)
 		return data
 	
+	@Slot( str, QImage )
+	def slotDrawImage(self, ident, img):
+		#print ident, "ok"
+		if cameras[ident]["live"] == True:
+			cameras[ident]["widget"].setIcon(0,QIcon("greenBall.png"))
+			self.treeWidget.insertTopLevelItem(0,cameras[ident]["widget"])
+			cameras[ident]["label"].setPixmap(QPixmap.fromImage(img))
+		else:
+			#print name , "failing"
+			cameras[ident]["widget"].setIcon(0,QIcon("redBall.png"))
+			self.treeWidget.insertTopLevelItem(0,cameras[ident]["widget"])
+		self.show()
+		
+	
+	#QThread reader for cameras sensors
+class CameraReader(QThread):
+	signalVal = Signal( str, QImage)
+	def __init__(self, ident):
+		super(CameraReader, self).__init__()
+		self.ident = ident
+		
+	def run(self):
+		while True:
+			#print "hola", self.ident
+			cam  = cameras[self.ident] 
+			if cam["grabber"] is None:
+				#print "connecting" , self.ident
+				cam["grabber"] = cv2.VideoCapture(cam["url"])
+			if  cam["grabber"].isOpened():
+					#print self.ident, "grabbing"
+					cool, frame = cam["grabber"].read()
+					if cool:
+						frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+						img = QImage(frame.data, frame.shape[1], frame.shape[0], QImage.Format_RGB888)    
+						cam["live"] = True
+						self.signalVal.emit( self.ident, img )
+						cam["live"] = True
+					else:
+						cam["live"] = False
+			self.msleep(100)
 	def readCameras(self):
 		for name, data in cameras.iteritems():
 			if data["grabber"].isOpened():
