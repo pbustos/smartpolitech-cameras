@@ -24,29 +24,20 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 		global cameras
    
 		cameras = self.readJSONFile('cameras.json')["cameras"]
-		
-		#for c,d in cameras.iteritems():
-			#d["grabber"] = cv2.VideoCapture(d["url"])
-			#d["bg"] = cv2.BackgroundSubtractorMOG()
 			
-			#print "Camera: ",c, " status = ",d["grabber"].isOpened()
-		
-		#sumOK = sum( 1 for d in cameras.values() if d["grabber"].isOpened() )
-		sumOK = len(cameras)
-		
 		for cam,data in cameras.iteritems():
 			data["grabber"] = None
 			data["thread"] = CameraReader(cam)
-			data["thread"].signalVal.connect(self.slotDrawImage)
+			data["thread"].signalDrawImg.connect(self.slotDrawImage)
+			data["thread"].signalAddImg.connect(self.slotAddImage)
+			data["live"] = False
+			
+		self.buildTreeWidget()
 		
-		for cam, cont  in zip( cameras.values(), range(sumOK)):
-			row,col  = self.buildGrid(sumOK, cont)
-			label = QLabel("caca")
-			self.gridLayout.addWidget(label, row, col)
-			cam["label"] = label
-			print sumOK, cont, row, col,cam["label"]
-	
-		#Tree widget
+		[c["thread"].start() for c in cameras.values() ]
+		self.show()
+		
+	def buildTreeWidget(self):
 		items = []
 		self.treeWidget.setColumnCount(2)
 		self.treeWidget.setHeaderLabels(["Live", "Camera"])
@@ -55,24 +46,18 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 			widget.setText(1,name)
 			widget.setIcon(0,QIcon("redBall.png"))
 			data["widget"] = widget
-			items.append(widget)
-			data["live"] = False
-		self.treeWidget.insertTopLevelItems(1,items)
-        
+			#items.append(widget)
+			self.treeWidget.insertTopLevelItem(1,widget)
+			for cont in data.keys():
+				child = QTreeWidgetItem(self.treeWidget)
+				print cont
+				child.setText( 1, str(cont) )
+				widget.addChild( child )
+		
 		for i in range(self.treeWidget.columnCount()):
 			self.treeWidget.resizeColumnToContents(i); 
 		
-		#timer.timeout.connect( self.readCameras ) 
-		[c["thread"].start() for c in cameras.values() ]
-		#timer.start(100)
-		self.show()
-		
-	def buildGrid(self, numCams, index):		
-		totalCols = int( math.ceil(math.sqrt(numCams)) )
-		row = index / totalCols
-		col = index % totalCols
-		return row, col
-		
+	
 	def readJSONFile(self, fileName, imprimir = False):
 		with open(fileName, 'r') as fileJson:
 			data = json.load(fileJson)
@@ -82,21 +67,44 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 	
 	@Slot( str, QImage )
 	def slotDrawImage(self, ident, img):
-		#print ident, "ok"
-		if cameras[ident]["live"] == True:
-			cameras[ident]["widget"].setIcon(0,QIcon("greenBall.png"))
-			self.treeWidget.insertTopLevelItem(0,cameras[ident]["widget"])
-			cameras[ident]["label"].setPixmap(QPixmap.fromImage(img))
-		else:
-			#print name , "failing"
-			cameras[ident]["widget"].setIcon(0,QIcon("redBall.png"))
-			self.treeWidget.insertTopLevelItem(0,cameras[ident]["widget"])
+		#print ident
+		label = cameras[ident]["label"]
+	#	label.setPixmap(QPixmap.fromImage(img).scaled(label.width(), label.height()))
+		label.setPixmap(QPixmap.fromImage(img))
 		self.show()
 		
+	@Slot( str )
+	def slotAddImage(self, ident):
+		#print ident, "ok"
+		cameras[ident]["widget"].setIcon(0,QIcon("greenBall.png"))
+		self.treeWidget.insertTopLevelItem(0,cameras[ident]["widget"])
+		
+		sumOK = sum([1 for data in cameras.values() if data["live"] == True ])
+		totalCols = int( math.ceil(math.sqrt(sumOK)) )
+		index = 0
+		for data in cameras.values():
+			if data["live"] == True:
+				row = index / totalCols
+				col = index % totalCols
+				index += 1
+				label = QLabel("img")
+				self.gridLayout.addWidget(label, row, col)
+				cameras[ident]["label"] = label
+				print sumOK, row, col
+		self.show()	
+	
+	@Slot( str )
+	def slotRemoveImage(self, ident ):
+		#print ident, "ok"
+		cameras[ident]["widget"].setIcon(0,QIcon("redBall.png"))
+		self.treeWidget.insertTopLevelItem(0,cameras[ident]["widget"])
+		self.show()
 	
 	#QThread reader for cameras sensors
 class CameraReader(QThread):
-	signalVal = Signal( str, QImage)
+	signalDrawImg = Signal( str, QImage)
+	signalAddImg = Signal( str )
+	
 	def __init__(self, ident):
 		super(CameraReader, self).__init__()
 		self.ident = ident
@@ -104,32 +112,45 @@ class CameraReader(QThread):
 	def run(self):
 		while True:
 			#print "hola", self.ident
-			cam  = cameras[self.ident] 
+			cam  = cameras[self.ident]
+			#Check for the first time
 			if cam["grabber"] is None:
 				#print "connecting" , cam["url"]
 				cam["grabber"] = cv2.VideoCapture(cam["url"])
+				if cam["grabber"].isOpened():
+					cam["live"] = True
+					self.signalAddImg.emit( self.ident )
+			#Try to read
 			if  cam["grabber"].isOpened():
 					#print self.ident, "grabbing"
 					cool, frame = cam["grabber"].read()
 					if cool:
+						if cam["live"] == False:
+							cam["live"] = True
+							self.signalAddImg.emit( self.ident )
 						frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 						img = QImage(frame.data, frame.shape[1], frame.shape[0], QImage.Format_RGB888)    
-						cam["live"] = True
-						self.signalVal.emit( self.ident, img )
-						cam["live"] = True
+						self.signalDrawImg.emit( self.ident, img )
 					else:
 						cam["live"] = False
-			self.msleep(100)
+						#self.signalRemoveImg
+					self.msleep(100)
+			else:  #not working
+				cam["live"] = False
+				cam["grabber"] = cv2.VideoCapture(cam["url"])
+				self.msleep(500)
+				
 	
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     timer = QTimer()
     mainWin = MainWindow()
     
+    #File changing daemon
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     event_handler = LoggingEventHandler()
     observer = Observer()
-    observer.schedule(event_handler, "..", recursive=True)
+    observer.schedule(event_handler, "..")
     observer.start()
     
     ret = app.exec_()
