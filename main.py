@@ -1,10 +1,13 @@
-import cv2, sys, requests, json, math
+import cv2, sys, requests, json, math, logging
 import numpy as np
 from collections import deque
 from PySide.QtCore import *
 from PySide.QtGui import *
 import pyqtgraph as pg
 from subprocess import call
+from watchdog.observers import Observer
+from watchdog.events import LoggingEventHandler
+
 
 # Generate GUI form .ui file
 call("pyside-uic vcapturegui.ui > ui_vcapturegui.py", shell=True)
@@ -103,7 +106,7 @@ class CameraReader(QThread):
 			#print "hola", self.ident
 			cam  = cameras[self.ident] 
 			if cam["grabber"] is None:
-				#print "connecting" , self.ident
+				#print "connecting" , cam["url"]
 				cam["grabber"] = cv2.VideoCapture(cam["url"])
 			if  cam["grabber"].isOpened():
 					#print self.ident, "grabbing"
@@ -117,34 +120,18 @@ class CameraReader(QThread):
 					else:
 						cam["live"] = False
 			self.msleep(100)
-	def readCameras(self):
-		for name, data in cameras.iteritems():
-			if data["grabber"].isOpened():
-				cool, frame = data["grabber"].read()
-				if cool:
-					print name, "ok"
-					frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-					img = QImage(frame.data, frame.shape[1], frame.shape[0], QImage.Format_RGB888)    
-					if data["live"] == False:
-						data["live"] = True
-						data["widget"].setIcon(0,QICon("greenBall.jpeg"))
-						self.treeWidget.insertTopLevelItem(0,data["widget"])
-						
-					#imb = QImage(cv2.cvtColor(data["bg"].apply(frame),cv2.COLOR_GRAY2BGR).data, 640, 480, QImage.Format_RGB888)
-					#imb = QImage(data["bg"].apply(frame).data, 640, 480, QImage.Format_Indexed8)                  
-					#data["label"].setPixmap(QPixmap.fromImage(img).scaled(data["label"].width(), data["label"].height()))
-					data["label"].setPixmap(QPixmap.fromImage(img))
-				else:
-					print name , "failing"
-					data["widget"].setIcon(0,QICon("redBall.png"))
-					self.treeWidget.insertTopLevelItem(0,data["widget"])
-					data["live"] = False
-                 
-
+	
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     timer = QTimer()
     mainWin = MainWindow()
+    
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    event_handler = LoggingEventHandler()
+    observer = Observer()
+    observer.schedule(event_handler, "..", recursive=True)
+    observer.start()
+    
     ret = app.exec_()
     sys.exit( ret )	
     
