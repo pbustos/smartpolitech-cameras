@@ -1,4 +1,4 @@
-import cv2, sys, requests, json, math, logging
+import cv2, sys, requests, json, math, logging, urllib2
 import numpy as np
 from collections import deque
 from PySide.QtCore import *
@@ -17,23 +17,27 @@ from ui_vcapturegui import Ui_MainWindow
 cameras = {}
 
 class MainWindow(QMainWindow, Ui_MainWindow):
-	def __init__(self):
+	def __init__(self, argv):
 		super(MainWindow, self).__init__()
 		self.setupUi(self)
 		self.show()
 		global cameras
-   
-		cameras = self.readJSONFile('cameras.json')["cameras"]
+
+		nomFich = argv[1]
+		cameras = self.readJSONFile(nomFich)["cameras"]
 			
 		for cam,data in cameras.iteritems():
 			data["grabber"] = None
-			data["thread"] = CameraReader(cam)
+			if data["type"] == "cv":
+				data["thread"] = CameraReader(cam)
+			if data["type"] == "manual":
+				data["thread"] = CameraReaderManual(cam)
 			data["thread"].signalDrawImg.connect(self.slotDrawImage)
 			data["thread"].signalAddImg.connect(self.slotAddImage)
 			data["live"] = False
 			
 		self.buildTreeWidget()
-		
+
 		[c["thread"].start() for c in cameras.values() ]
 		self.show()
 		
@@ -48,11 +52,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 			data["widget"] = widget
 			#items.append(widget)
 			self.treeWidget.insertTopLevelItem(1,widget)
-			for cont in data.keys():
-				child = QTreeWidgetItem(self.treeWidget)
-				print cont
-				child.setText( 1, str(cont) )
-				widget.addChild( child )
+			#for cont in data.values():
+			child = QTreeWidgetItem(self.treeWidget)
+			#print cont
+			child.setText(1, str(data["url"]))
+			widget.addChild( child )
 		
 		for i in range(self.treeWidget.columnCount()):
 			self.treeWidget.resizeColumnToContents(i); 
@@ -69,7 +73,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 	def slotDrawImage(self, ident, img):
 		#print ident
 		label = cameras[ident]["label"]
-	#	label.setPixmap(QPixmap.fromImage(img).scaled(label.width(), label.height()))
+		#	label.setPixmap(QPixmap.fromImage(img).scaled(label.width(), label.height()))
 		label.setPixmap(QPixmap.fromImage(img))
 		self.show()
 		
@@ -88,6 +92,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 				col = index % totalCols
 				index += 1
 				label = QLabel("img")
+				label.setScaledContents(True)
+				label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 				self.gridLayout.addWidget(label, row, col)
 				cameras[ident]["label"] = label
 				print sumOK, row, col
@@ -99,8 +105,43 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 		cameras[ident]["widget"].setIcon(0,QIcon("redBall.png"))
 		self.treeWidget.insertTopLevelItem(0,cameras[ident]["widget"])
 		self.show()
-	
-	#QThread reader for cameras sensors
+
+class CameraReaderManual(QThread):
+	signalDrawImg = Signal( str, QImage)
+	signalAddImg = Signal( str )
+	def __init__(self, ident):
+		super(CameraReaderManual, self).__init__()
+
+		authhandler = urllib2.HTTPDigestAuthHandler()
+		authhandler.add_password(cameras[ident]["realm"], cameras[ident]["url"], cameras[ident]["usr"], cameras[ident]["passwd"])
+		opener = urllib2.build_opener(authhandler)
+		urllib2.install_opener(opener)
+		self.page_content = urllib2.urlopen(cameras[ident]["url"])
+		self.bytesS = ""
+		self.ident = ident
+
+	def run(self):
+		cameras[self.ident]["live"] = True
+		self.signalAddImg.emit(self.ident)
+
+		while True:
+			#print "ooooo"
+			self.bytesS += self.page_content.read(1024)
+			a = self.bytesS.find('\xff\xd8')
+			b = self.bytesS.find('\xff\xd9')
+			if a!=-1 and b!=-1:
+				jpg   = self.bytesS[a:b+2]
+				self.bytesS = self.bytesS[b+2:]
+				frame = cv2.imdecode(np.fromstring(jpg, dtype=np.uint8),cv2.CV_LOAD_IMAGE_COLOR)
+				frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+				img = QImage(frame.data, frame.shape[1], frame.shape[0], QImage.Format_RGB888)
+				self.signalDrawImg.emit(self.ident, img)
+				#cv2.imshow('i',image)
+				#if cv2.waitKey(1):#&0xff==ord('q'):
+				#	break
+
+
+#QThread reader for cameras sensors
 class CameraReader(QThread):
 	signalDrawImg = Signal( str, QImage)
 	signalAddImg = Signal( str )
@@ -136,24 +177,26 @@ class CameraReader(QThread):
 						#self.signalRemoveImg
 					self.msleep(100)
 			else:  #not working
-				cam["live"] = False
 				cam["grabber"] = cv2.VideoCapture(cam["url"])
+				if cam["grabber"].isOpened():
+					cam["live"] = True
+				else:
+					cam["live"] = False
 				self.msleep(500)
 				
 	
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    timer = QTimer()
-    mainWin = MainWindow()
-    
-    #File changing daemon
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    event_handler = LoggingEventHandler()
-    observer = Observer()
-    observer.schedule(event_handler, "..")
-    observer.start()
-    
-    ret = app.exec_()
-    sys.exit( ret )	
+	app = QApplication(sys.argv)
+	timer = QTimer()
+	mainWin = MainWindow(sys.argv)
+	#File changing daemon
+	logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+	event_handler = LoggingEventHandler()
+	observer = Observer()
+	observer.schedule(event_handler, ".")
+	observer.start()
+
+	ret = app.exec_()
+	sys.exit( ret )
     
 
