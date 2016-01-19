@@ -30,7 +30,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 			data["grabber"] = None
 			if data["type"] == "cv":
 				data["thread"] = CameraReader(cam)
-			if data["type"] == "manual":
+			elif data["type"] == "digest" or data["type"] == "basic":
 				data["thread"] = CameraReaderManual(cam)
 			data["thread"].signalDrawImg.connect(self.slotDrawImage)
 			data["thread"].signalAddImg.connect(self.slotAddImage)
@@ -82,12 +82,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 		#print ident, "ok"
 		cameras[ident]["widget"].setIcon(0,QIcon("greenBall.png"))
 		self.treeWidget.insertTopLevelItem(0,cameras[ident]["widget"])
-		
+
 		sumOK = sum([1 for data in cameras.values() if data["live"] == True ])
 		totalCols = int( math.ceil(math.sqrt(sumOK)) )
 		index = 0
 		for data in cameras.values():
-			if data["live"] == True:
+			if data["live"]:
 				row = index / totalCols
 				col = index % totalCols
 				index += 1
@@ -97,7 +97,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 				self.gridLayout.addWidget(label, row, col)
 				cameras[ident]["label"] = label
 				print sumOK, row, col
-		self.show()	
+		self.show()
 	
 	@Slot( str )
 	def slotRemoveImage(self, ident ):
@@ -112,33 +112,41 @@ class CameraReaderManual(QThread):
 	def __init__(self, ident):
 		super(CameraReaderManual, self).__init__()
 
-		authhandler = urllib2.HTTPDigestAuthHandler()
-		authhandler.add_password(cameras[ident]["realm"], cameras[ident]["url"], cameras[ident]["usr"], cameras[ident]["passwd"])
-		opener = urllib2.build_opener(authhandler)
+		if cameras[ident]["type"] == "digest":
+			self.authhandler = urllib2.HTTPDigestAuthHandler()
+		if cameras[ident]["type"] == "basic":
+			self.authhandler = urllib2.HTTPBasicAuthHandler()
+
+		self.authhandler.add_password(cameras[ident]["realm"], cameras[ident]["url"], cameras[ident]["usr"], cameras[ident]["passwd"])
+		opener = urllib2.build_opener(self.authhandler)
 		urllib2.install_opener(opener)
-		self.page_content = urllib2.urlopen(cameras[ident]["url"])
+		# self.page_content = urllib2.urlopen(cameras[ident]["url"])
 		self.bytesS = ""
 		self.ident = ident
+		self.page_content = None
 
 	def run(self):
-		cameras[self.ident]["live"] = True
-		self.signalAddImg.emit(self.ident)
-
 		while True:
-			#print "ooooo"
-			self.bytesS += self.page_content.read(1024)
-			a = self.bytesS.find('\xff\xd8')
-			b = self.bytesS.find('\xff\xd9')
-			if a!=-1 and b!=-1:
-				jpg   = self.bytesS[a:b+2]
-				self.bytesS = self.bytesS[b+2:]
-				frame = cv2.imdecode(np.fromstring(jpg, dtype=np.uint8),cv2.CV_LOAD_IMAGE_COLOR)
-				frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-				img = QImage(frame.data, frame.shape[1], frame.shape[0], QImage.Format_RGB888)
-				self.signalDrawImg.emit(self.ident, img)
-				#cv2.imshow('i',image)
-				#if cv2.waitKey(1):#&0xff==ord('q'):
-				#	break
+			if self.page_content is not None:
+				self.bytesS += self.page_content.read(1024)
+				a = self.bytesS.find('\xff\xd8')
+				b = self.bytesS.find('\xff\xd9')
+				if a!=-1 and b!=-1:
+					jpg   = self.bytesS[a:b+2]
+					self.bytesS = self.bytesS[b+2:]
+					frame = cv2.imdecode(np.fromstring(jpg, dtype=np.uint8),cv2.CV_LOAD_IMAGE_COLOR)
+					if frame is not None:
+						# frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+						img = QImage(frame.data, frame.shape[1], frame.shape[0], QImage.Format_RGB888)
+						self.signalDrawImg.emit(self.ident, img)
+			else:
+				self.page_content = urllib2.urlopen(cameras[self.ident]["url"])
+				if self.page_content is not None:
+					cameras[self.ident]["live"] = True
+					self.signalAddImg.emit(self.ident)
+				else:
+					cameras[self.ident]["live"] = False
+					self.msleep(500)
 
 
 #QThread reader for cameras sensors
